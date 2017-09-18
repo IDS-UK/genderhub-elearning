@@ -5,8 +5,8 @@ Plugin URI: http://www.umfundi.com/registration-import/
 Description: Allows the batch importation of users/members from CSV file to BuddyPress setup. Premium version -  Import from Eventbrite at the press of a button!
 Author: Ian Molesworth
 Author URI: http://www.umfundi.com
-Version: 3.7
-Date: 01/25/2015
+Version: 4.0
+Date: 01/08/2016
 Author Emailid: go@umfundi.com/skype:nimbusgb
 */
 
@@ -15,11 +15,21 @@ add_action( 'admin_init', 'change_time_out' );
 function change_time_out() {
 	/* max timeout to allow for mass user upload. */
 	ini_set( 'max_execution_time', 0 );
-	ini_set( 'memory_limit', '512M' );
+	ini_set( 'memory_limit', '256M' );
 }
 
 function bmi_admin_css() {
 	wp_enqueue_style( 'bmi-style-css', plugin_dir_url( __FILE__ ) . '/registrations-import.css' );
+}
+
+function debug_to_console( $data ) {
+
+    if ( is_array( $data ) )
+        $output = "<script>console.log( 'Debug : " . implode( ',', $data) . "' );</script>";
+    else
+        $output = "<script>console.log( 'Debug : " . $data . "' );</script>";
+
+    echo $output;
 }
 
 // add admin menu
@@ -77,9 +87,9 @@ Thanks
 		'role'
 	);
 
-	$html_message = $error_message = $not_imported_usernames = '';
+	$html_message = $error_message = '' ;
 
-	//Check whether the curent user has the access or not
+	//Check whether the curent user has the access required or not
 	if ( ! current_user_can( 'manage_options' ) )
 		wp_die( __( 'You do not have sufficient permissions to access this page.' ) );
 
@@ -124,11 +134,20 @@ Thanks
 			$html_message .= 'Upload only .csv file!!';
 			$html_message .= '</div>';
 		} else {
-			$avatar = isset( $_POST['avatar'] ) ? $_POST['avatar'] : false;
+			
+			$file = WP_PLUGIN_DIR."/registrations-import/results.csv";
+			if (file_exists ( $file ))
+				unlink($file);
+				
+			$logit = '';
+			
+//			file_put_contents($file, $current);
+			
+/*			$avatar = isset( $_POST['avatar'] ) ? $_POST['avatar'] : false;
 
 			// Check whether the admin wants to upload members avatar or not. If yes then
 			// Check whether the avatars directory present or not. If not then create.
-			if ( $avatar ) if ( ! file_exists( AVATARS ) ) mkdir( AVATARS, 0777 );
+			if ( $avatar ) if ( ! file_exists( AVATARS ) ) mkdir( AVATARS, 0777 ); */
 
 			ini_set( 'auto_detect_line_endings', TRUE );
 			$handle = fopen( $_FILES['csv_file']['tmp_name'], 'r' );
@@ -138,6 +157,7 @@ Thanks
 			$user_import = 0;
 			$not_import_message = '';
 			$total_rows = $new_user_imported = $old_user_updated = $user_not_imported = 0;
+			
 			while ( ( $row = fgetcsv( $handle, filesize( $_FILES['csv_file']['tmp_name'] ), ',' ) ) !== false ) {
 				$row = array_map( 'trim', $row );
 				if ( 1 === count( $row ) ) continue;
@@ -145,16 +165,31 @@ Thanks
 				// If we are on the first line, get the columns name in headers array
 				if ( $first ) {
 					$headers = $row;
+					foreach ( $headers as $ckey => $cvalue ) {
+						$head .= $cvalue.",";
+						}	
+					file_put_contents($file, $head."action\n");
 					$first = false;
 					continue;
-				}
+					}
+					
 				$total_rows++;
-
+				// action carried notes for outputting to the csv file.
+				$action = '';
+				
 				// Separate user data from meta
 				$userdata = $usermeta = $bpmeta = $bp_provided_fields = array();
-
+				$result ='';
+				
 				foreach ( $row as $ckey => $cvalue ) {
-					if ( empty( $cvalue ) ) continue;
+					
+					if ( empty( $cvalue ) ){
+						$result .=",";
+						continue;
+						}
+						
+					// put the data into a string for outputting to the csv result file.
+					$result .= $cvalue.",";
 
 					$column_name = $headers[$ckey];
 
@@ -163,12 +198,13 @@ Thanks
 					if ( strpos( $cvalue, '::' ) ) {
 						$cvalue = explode( '::', $cvalue );
 						$cvalue = array_filter( $cvalue, function( $item ) { return !empty( $item[0] ); } );
-					}
+						}
 
-					if ( in_array( $column_name, $wp_userdata_fields ) ) $userdata[$column_name] = $cvalue;
+					if ( in_array( $column_name, $wp_userdata_fields ) ) 
+						$userdata[$column_name] = $cvalue;
 					else if ( $bp_status && array_search( $column_name, $bp_xprofile_fields ) ) {
-							$bp_provided_fields[] = $column_name;
-							$bpmeta[array_search( $column_name, $bp_xprofile_fields )] = $cvalue;
+						$bp_provided_fields[] = $column_name;
+						$bpmeta[array_search( $column_name, $bp_xprofile_fields )] = $cvalue;
 						}
 					else $usermeta[$column_name] = $cvalue;
 				}
@@ -203,61 +239,91 @@ Thanks
 					}
 				}
 				
-				// If no user data, comeout!
-				if ( empty( $userdata ) ) continue;
+				// If no user data at all, come out!
+				if ( empty( $userdata ) ) {
+				  	debug_to_console( "No user data - cannot import this line"  );  
+				  	// decrement the number of users found.
+				  	$total_rows--;
+				   	continue;
+				   	}
 
-				// If creating a new user and no password was set, let auto-generate one!
-				if ( empty( $userdata['user_pass'] ) )
+				// We need an email address
+				// If there's no email address, come out!
+				if ( empty( $userdata['user_email'])){
+					// increment the not imported count.......
+					$user_not_imported++;
+					file_put_contents($file, $result."No email present - ignored entry\n",FILE_APPEND);
+				    continue;
+				   }
+				     
+      			//  If creating a new user and no password was set, let auto-generate one!
+/*				if ( empty( $userdata['user_pass'] ) ){
+					debug_to_console( "No password in input - generating a password" );     
 					$userdata['user_pass'] = wp_generate_password( 12, false );
-
+				}
+				*/
+							
 				$userdata['user_login'] = strtolower( $userdata['user_login'] );
-
+				debug_to_console( "Assigning username ".$userdata['user_login']  );     
 				$space_remove = array( 'user_login', 'user_nicename' );
+				
 				foreach ( $space_remove as $key ) {
 					if ( isset( $userdata[$key] ) ) {
 						$userdata[$key] = str_replace(' ', '', strtolower( $userdata[$key] ) );
 					}
 				}
 
-				if ( ( $userdata['user_login'] == '' ) && ( $userdata['user_email'] == '' ) ) {
-					$error_message .= '<br />user_login or/and user_email needed to import members for row ' . $total_rows;
-					$user_not_imported++;
-					continue;
-				}
-				else if ( $userdata['user_login'] == '' )
+				// if we don't have a user login we set the login to the email address	
+				if ( $userdata['user_login'] == '' ){
 					$userdata['user_login'] = $userdata['user_email'];
-				else if ( $userdata['user_email'] == '' )
-					$userdata['user_email'] = $userdata['user_login'];
-
-				//Check whether the user already exist or not
+					$action = 'login set to email address';
+				}	
+					
+				// Check whether the user already exists or not ( email address exists )
 				$user_details = get_user_by( 'email', $userdata['user_email'] );
-				// If user already exists
+				// If the user already exists
 				if ( $user_details   ) { 
+					debug_to_console( "Input email matches an existing user - ". $userdata['user_email'] );  
 					// and we have ticked 'update users' then assign ID and update the account.
 					if (isset( $_POST['update_user'])) {
+						debug_to_console( "Updates enabled so updating" ); 
 						$userdata['ID'] = $user_details->data->ID;
 						// clear the password if we have not allowed it's update/overwrite
 						if ( !isset( $_POST['update_password'] ) ) {
+							debug_to_console( "password update not checked so password will not be changed");
+							file_put_contents($file, $result."Existing user updated - password not changed ( flag not selected )\n",FILE_APPEND);
 							unset( $userdata['user_pass'] );
+						}else {
+						    file_put_contents($file, $result."Existing user updated and password  changed\n",FILE_APPEND);
 						}
 					$user_id = wp_update_user( $userdata );
 					}  
-				} else {
+					else {
+						debug_to_console( "Updates not enabled so not updating" );  
+						file_put_contents($file, $result."Existing user not updated ( flag not selected )\n",FILE_APPEND);
+						}
+					} 
+					
+				// User email does not exist	
+				else {
 					// if the update user does not exist then we just do an user insert.					
-					// need to check if username already exists!
-//				    $user_details = get_user_by( 'login', $userdata['user_login'] );			    
-//				    error_log("CSV User details" . print_r($userdata, true)."\n",3,"mylog.log"); 
-//				    error_log("WP User details" . print_r($user_details, true)."\n",3,"mylog.log"); 			    
+					// but we need to check if username already exists!
+      			    $user_details = get_user_by( 'login', $userdata['user_login'] );	
+	    				if ( $user_details   ) { 
+	    					debug_to_console( "Can't insert as login username exists!"  );  	
+	    					file_put_contents($file, $result."Ignored as login <".$userdata['user_login']."> already exists",FILE_APPEND);				
+	    				}
+		    		else
 					$user_id = wp_insert_user( $userdata );
+					debug_to_console( "inserting"  );  	
+					debug_to_console( $userdata  );  	
+					file_put_contents($file, $result."New user created ".$action."\n",FILE_APPEND);
 				}
-			
-				
+					
 				// Is there an error?
 				if ( is_wp_error( $user_id ) ) {
 					$flag = 1;
 					$user_not_imported++;
-					$not_imported_usernames  .= '<b>' . $userdata['user_login'] . '</b> ' . $user_id->errors['existing_user_login'][0] . '<br />';
-      				error_log("wp_error on user! User not imported! ". print_r($user_id,true)."\n", 3,"mylog.log");
 				} else {
 					//Upload user avatar if permission granted.
 					if ( $bp_status && $avatar ) {
@@ -281,7 +347,9 @@ Thanks
 						}
 					}
 
-					//User count
+					// User count 
+					// If the array already holds the key ID then we are updating
+					// otherwise we are creating.
 					if ( array_key_exists( 'ID', $userdata ) ) {
 						$old_user_updated++;
 					} else {
@@ -296,7 +364,6 @@ Thanks
 					if ( isset( $bpmeta ) ) {
 						//Added an entry in user_meta table for current user meta key is last_activity
 						bp_update_user_last_activity( $user_id, date( 'Y-m-d H:i:s' ) );
-
 						foreach ( $bpmeta as $bpmetakeyid => $bpmetavalue ) {
 							xprofile_set_field_data( $bpmetakeyid, $user_id, $bpmetavalue );
 						}
@@ -352,15 +419,6 @@ Thanks
 						}
 					}
 				}
-
-				if ( $user_import === 0 && $user_import === 0 )
-					$not_import_message = 'No users imported.<br />';
-				$not_import_message .= $not_imported_usernames;
-
-				if ( $flag === 1 && $user_import === 1 ) {
-					$not_import_message = 'Following user(s) are not imported as they are already registered in your website:<br />';
-					$not_import_message .= $not_imported_usernames;
-				}
 			}
 
 			$html_message = '<div class="updated">';
@@ -370,6 +428,7 @@ Thanks
 			$html_message .= '<p>Total new users imported: '. $new_user_imported . '</p>';
 			$html_message .= '<p>Total old users updated: '. $old_user_updated . '</p>';
 			$html_message .= '<p style="color: #ff0000;">Total users not imported: ' . $user_not_imported . '</p>';
+			$html_message .= '<a href="/wp-content/plugins/registrations-import/results.csv">Download import results as a csv file</a>';
 			$html_message .= "</div>";
 		}
 	}  // end of 'if mode is submit'
@@ -413,7 +472,7 @@ function get_form( $html_message ) {
 					<td>
 						<label for="update_password">
 							<input id="update_password" name="update_password" type="checkbox" value="1" />
-							By checking this checkbox existing users passowrd will be update. Otherwise remain unchanged.
+							By checking this checkbox existing users passwords will be updated with data from the import. Otherwise it remains unchanged.
 						</label>
 					</td>
 				</tr>
@@ -435,27 +494,21 @@ function get_form( $html_message ) {
 						</label>
 					</td>
 				</tr>
-				<tr valign="top">
-					<th scope="row">Upload Avatar: </th>
-					<td>
-						<label for="avatar">
-							<input id="avatar" name="avatar" type="checkbox" value="1" />
-							Upload user avatar from CSV file. ( You must provide full path to the image.)
-						</label>
-					</td>
-				</tr>
+				<tr>	
+					<td>  </td>
+				</tr>				
 				<tr>
 					<th scope="row">Notice: </th>
 					<td>The CSV file MUST be in the following format:</td>
 				</tr>
-				<tr>
+			     <tr>
 					<th scope="row"></th>
 					<td>
 					#: File extension must be .csv 
 					#: Field names should be in the top line in CSV file separated by comma(,) and delimited by double quote(").<br />
 					#: For multivalued field value should be separate by :: in csv file.<br />
 					#: CSV file should be saved in UTF8 format.<br />
-					#: You do not have any blank rows in CSV file.<br />
+					#: There must not be any blank rows in CSV file.<br />
 					</td>
 				</tr>
 			</table>
@@ -491,8 +544,7 @@ function get_form( $html_message ) {
 	<div>
 		<hr />
 		<p><strong>WordPress default fields are as follows</strong></p>
-		'user_login', 'user_pass',
-		'user_email', 'user_url', 'user_nicename',
+		'user_login', 'user_pass',	'user_email', 'user_url', 'user_nicename',
 		'display_name', 'user_registered', 'first_name',
 		'last_name', 'nickname', 'description',
 		'rich_editing', 'comment_shortcuts', 'admin_color',
@@ -540,12 +592,12 @@ if ( ! function_exists( 'wp_new_user_notification' ) ) {
 
 		if ( $custom ) {
 			$replace_terms = array( '{FIRSTNAME}', 
-									'{LASTNAME}', 
-									'{USERNAME}', 
-									'{PASSWORD}', 
-									'{SITE_ADMIN}', 
-									'{LOGIN_URL}', 
-								);
+													'{LASTNAME}', 
+													'{USERNAME}', 
+													'{PASSWORD}', 
+													'{SITE_ADMIN}', 
+													'{LOGIN_URL}', 
+													  );
 			$current_data = array( get_user_meta( $user->ID, 'first_name', true ),
 						 		   get_user_meta( $user->ID, 'last_name', true), 
 						 		   $user_login, 
